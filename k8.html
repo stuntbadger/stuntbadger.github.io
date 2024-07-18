@@ -1,0 +1,305 @@
+How to install and Deploy Kubernetes on AlmaLinux 
+
+Introduction 
+
+My quick guide on how to install a Master and two worker nodes set up on AlamLinux ( this could be installed on any RHEL based OS ) 
+
+Prerequisites 
+
+Two or more servers running AlamaLinux
+2 GB RAM and 2 CPU 
+Sudo or root aceess to each system 
+
+
+Install Kuberneties on AlmaLinux 
+
+Kubernetes installation involves configuring the operating system and obtaining the dependencies necessary for the cluster setup. The following section lists the steps to prepare your AlmaLinux machines for a Kubernetes cluster deployment.
+
+Step 1: Configure SELinux and Firewall
+To ensure unhindered network traffic between nodes in the cluster, configure SELinux permissions and add the relevant ports to the list of firewall exceptions:
+
+1. Use the setenforce command to change SELinux mode to permissive:
+`sudo setenforce 0`
+
+2. Execute the sed command below to edit the selinux configuration file:
+
+`sudo sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/sysconfig/selinux`
+
+3. Check the SELinux status to confirm the changes:
+
+`sestatus`
+
+Look for the Current mode field in the output and ensure its value is permissive.
+
+4. Add firewall exceptions on the master node:
+
+`sudo firewall-cmd --permanent --add-port=6443/tcp`
+`sudo firewall-cmd --permanent --add-port=2379-2380/tcp`
+`sudo firewall-cmd --permanent --add-port=10250/tcp`
+`sudo firewall-cmd --permanent --add-port=10251/tcp`
+`sudo firewall-cmd --permanent --add-port=10259/tcp`
+`sudo firewall-cmd --permanent --add-port=10257/tcp`
+`sudo firewall-cmd --permanent --add-port=179/tcp`
+`sudo firewall-cmd --permanent --add-port=4789/udp`
+
+5. Add the following exceptions on each worker node:
+
+`sudo firewall-cmd --permanent --add-port=179/tcp`
+`sudo firewall-cmd --permanent --add-port=10250/tcp`
+`sudo firewall-cmd --permanent --add-port=30000-32767/tcp`
+`sudo firewall-cmd --permanent --add-port=4789/udp`
+
+6. Reload the firewall configuration on all the machines:
+
+`sudo firewall-cmd --reload`
+
+Step 2: Assign Unique Hostnames for Cluster Nodes
+Cluster nodes in Kubernetes need to have unique hostnames. Change the hostnames of your master and worker machines by applying the following two steps on each node:
+
+1. Use the hostnamectl command:
+
+`sudo hostnamectl set-hostname [hostname]`
+
+For my example I have chosen to use k8s-master.home , k8-worker-1.home, k8-worker-2.home 
+
+3. Add the hostnames and the corresponding IP addresses of all the cluster members:
+
+[master-node-ip] [master-node-hostname]
+[worker-node-ip] [worker-node-hostname]
+
+`nano /etc/hosts `
+
+in my case I added the following to the host file 
+
+`192.168.60.22 k8s-master.home`
+`192.168.60.23 k8s-worker-1.home`
+`192.168.60.24 k8s-worker-2.home`
+
+Step 3: Disable Swap Memory
+Kubernetes requires virtual memory to be disabled before cluster initialization. Running a node with the swap on affects cluster performance. Disable swap memory on AlmaLinux by applying the following steps:
+
+1. Execute the swapoff command:
+
+`sudo swapoff -a`
+
+2. Make the change persist across reboots by disabling swap on startup:
+
+`sudo sed -i '/ swap / s/^/#/' /etc/fstab`
+
+
+Step 4: Install Docker
+Kubernetes requires Docker installed on each node to act as a container builder. The steps below explain how to install Docker on AlmaLinux.
+
+1. Update YUM repositories:
+
+`sudo yum -y update`
+
+2. Install yum-utils, a package that facilitates working with repositories:
+
+`sudo yum install -y yum-utils`
+
+3. Add the official Docker repository for CentOS, which is fully compatible with AlmaLinux:
+
+`sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo`
+
+4. Install Docker and all the necessary dependencies by typing:
+
+`sudo yum install -y docker-ce docker-ce-cli containerd.io --allowerasing`
+
+5. Enable the Docker service:
+
+`sudo systemctl enable docker`
+
+6. Start Docker:
+
+`sudo systemctl start docker`
+
+
+Step 5: Change cgroup Driver
+1. Use a text editor to open the daemon.json file:
+
+`sudo nano /etc/docker/daemon.json`
+
+2. Insert the following configuration into the file:
+
+`{`
+`  "exec-opts": ["native.cgroupdriver=systemd"],`
+`  "log-driver": "json-file",`
+`  "log-opts": {`
+`    "max-size": "100m"`
+`  },`
+`  "storage-driver": "overlay2"`
+`}`
+
+3. Reload the Docker daemon by typing:
+
+`sudo systemctl daemon-reload`
+
+4. Restart Docker to complete the process:
+
+`sudo systemctl restart docker`
+
+Step 6: Install cri-dockerd
+The dockerd CRI (Compliant Runtime Interface) is a Docker Engine shim that allows Kubernetes to control Docker Engine. Install cri-dockerd by following the procedure below.
+
+1. Visit the cri-dockerd GitHub latest release page. https://github.com/Mirantis/cri-dockerd/releases/latest 
+
+2. Write down the latest version number. At the time of writing, the latest cri-dockerd version was v0.3.14.
+
+3. Use the wget command to download the cri-dockerd TGZ archive:
+
+`wget https://github.com/Mirantis/cri-dockerd/releases/download/v0.3.14/cri-dockerd-0.3.14.amd64.tgz`
+
+4. Untar the archive by typing:
+
+tar xvf cri-dockerd-0.3.14.amd64.tgz
+
+5. Move the binary to /usr/local/bin:
+
+`sudo mv cri-dockerd/cri-dockerd /usr/local/bin/`
+
+6. Test the installation by checking the cri-dockerd version:
+
+`cri-dockerd --version`
+
+7. Download the cri-dockerd service binary and the socket:
+
+`wget https://raw.githubusercontent.com/Mirantis/cri-dockerd/master/packaging/systemd/cri-docker.service https://raw.githubusercontent.com/Mirantis/cri-dockerd/master/packaging/systemd/cri-docker.socket`
+
+8. Move both files to /etc/systemd/system/:
+
+`sudo mv cri-docker.socket cri-docker.service /etc/systemd/system/`
+
+9. Connect the service with the main cri-dockerd binary:
+
+`sudo sed -i -e 's,/usr/bin/cri-dockerd,/usr/local/bin/cri-dockerd,' /etc/systemd/system/cri-docker.service`
+
+10. Reload the daemon configuration:
+
+`sudo systemctl daemon-reload`
+
+11. Enable the service using the systemctl command:
+
+`sudo systemctl enable cri-docker.service`
+
+12. Next, enable the socket:
+
+`sudo systemctl enable --now cri-docker.socket`
+
+13. Confirm that the service is running by typing:
+
+`systemctl status cri-docker.socket`
+
+The output shows the service as active.
+
+Step 7: Install Kubernetes
+Kubernetes installation consists of three main packages:
+
+kubeadm that contains cluster initialization tools.
+kubelet, the primary node agent.
+kubectl, the Kubernetes command-line tool.
+Follow the steps below to install the packages on your system.
+
+1. Use a text editor to create and open a .REPO file for Kubernetes:
+
+`sudo nano /etc/yum.repos.d/kubernetes.repo`
+
+2. Copy the code below and paste it into the file.
+
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
+exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+
+Save the file and exit.
+
+3. Once the repository is defined, install the Kubernetes tools by typing:
+
+`sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes`
+
+Deploy Kubernetes Cluster on AlmaLinux
+After configuring the system and installing the packages, initialize the master node, configure the pod networking, and join worker nodes to the cluster. Find the instructions for each step of the process in the sections below.
+
+Step 1: Initialize Kubernetes on Master Node
+Every Kubernetes cluster deployment starts by initializing the cluster on the master node. Execute the following steps on the machine you set up as the master in the installation part of this tutorial.
+
+1. Enable the kubelet service:
+
+`sudo systemctl enable kubelet`
+
+2. Start the service:
+
+`sudo systemctl start kubelet`
+
+3. Use the kubeadm tool to initialize the cluster. Since cri-dockerd provides the second CRI endpoint, specify the endpoint to use with the --cri-socket option:
+
+`sudo kubeadm init --cri-socket /run/cri-dockerd.sock --pod-network-cidr 10.244.0.0/16`
+
+Wait for the cluster to initialize. When Kubernetes finishes the setup, a confirmation message appears. The message contains additional instructions to start using the cluster.
+
+4. Write down the kubeadm join command at the bottom of the initialization message. You will use it later to join the worker nodes to the cluster.
+
+it will look something similar to :- 
+
+`kubeadm join 192.168.60.22:6443 --token rdd07e.6j6b2fbmn580fvol         --discovery-token-ca-cert-hash sha256:1f7225548c00ca4a923fa93dcb0f7392fcb0cc6452c59fe3e55b3d71bdffe4d6`
+
+Step 2: Export Certificate
+Finalize the cluster initialization by executing the following steps:
+
+1. Create .kube directory in your user's home directory:
+`mkdir -p $HOME/.kube`
+
+2. Copy the Kubernetes configuration file to the newly created directory:
+
+`sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config`
+
+3. Change the directory permissions:
+
+`sudo chown $(id -u):$(id -g) $HOME/.kube/config`
+
+4. Use kubectl to see the status of the nodes in the cluster:
+
+`kubectl get nodes`
+
+The output shows the initialized master node with the NotReady status.
+
+Step 3: Pod Network Configuration
+Configure a pod network to enable the master node to schedule pods. This tutorial shows you how to establish pod networking with Flannel, a lightweight pod traffic manager.
+
+1. Apply Flannel's manifest YAML file by using kubectl apply:
+
+`kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml`
+
+Wait for Flannel to create the necessary pods.
+
+2. Remove the node taint and enable the master node to serve as the control plane:
+
+`kubectl taint nodes --all node-role.kubernetes.io/control-plane-`
+
+3. Check the status of the node:
+
+`kubectl get nodes`
+
+The master node now shows the Ready status.
+
+Step 4: Join Worker Nodes
+Once the control plane on the master node is up and running, proceed to join additional nodes to the cluster. Perform the following steps on each machine you want to add as a worker node.
+
+1. Execute the kubeadm join command you copied from the master node initialization message in Step 1 of this section.
+`kubeadm join 192.168.60.22:6443 --token rdd07e.6j6b2fbmn580fvol         --discovery-token-ca-cert-hash sha256:1f7225548c00ca4a923fa93dcb0f7392fcb0cc6452c59fe3e55b3d71bdffe4d6`
+
+Wait for the node to join the cluster. Once the procedure finishes, a message is displayed.
+
+2. List the available nodes on the master node:
+
+`kubectl get nodes`
+
+The list now shows two cluster nodes with the Ready status.
+
+Conclusion
+
+After reading this article, you should know how to set up all the packages required for a Kubernetes installation on AlmaLinux. The tutorial also covers the instructions for a fully functional Kubernetes cluster deployment.
+
